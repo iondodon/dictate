@@ -1,0 +1,50 @@
+# Zig build artifacts
+.zig-cache/
+#zig-out/
+#zig-cache/
+
+# Compiled binaries
+*.exe
+*.dll
+*.so
+*.dylib
+*.a
+*.lib
+*.o
+*.obj
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+.#*
+
+# Editor and IDE files
+.vscode/
+.idea/
+*.sublime-*
+.vim/
+
+# OS specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Log files
+*.log
+logs/
+
+# Audio files (temporary recordings)
+/tmp/dictate_*.wav
+dictate_*.wav

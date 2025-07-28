@@ -3,6 +3,8 @@ const c = @cImport({
     @cInclude("X11/Xlib.h");
     @cInclude("X11/keysym.h");
     @cInclude("X11/extensions/XTest.h");
+    @cInclude("X11/Xutil.h");
+    @cInclude("X11/Xatom.h");
     @cInclude("alsa/asoundlib.h");
     @cInclude("curl/curl.h");
     @cInclude("unistd.h");
@@ -24,26 +26,41 @@ const App = struct {
     is_recording: bool,
     recording_thread: ?std.Thread,
     mutex: std.Thread.Mutex,
+    tray_window: c.Window,
+    screen: c_int,
+    root_window: c.Window,
 
     const Self = @This();
 
     fn init(allocator: std.mem.Allocator) !*Self {
         const app = try allocator.create(Self);
+        const display = c.XOpenDisplay(null) orelse return error.XDisplayFailed;
+        const screen = c.XDefaultScreen(display);
+        const root = c.XRootWindow(display, screen);
+
         app.* = Self{
-            .allocator = allocator,
-            .display = c.XOpenDisplay(null) orelse return error.XDisplayFailed,
+1, 2, 3            .allocator = allocator,
+            .display = display,
             .state = .NotListening,
             .audio_data = std.ArrayList(u8).init(allocator),
             .is_recording = false,
             .recording_thread = null,
             .mutex = std.Thread.Mutex{},
+            .tray_window = 0,
+            .screen = screen,
+            .root_window = root,
         };
+
+        try app.initTrayIcon();
         return app;
     }
 
     fn deinit(self: *Self) void {
         if (self.recording_thread) |thread| {
             thread.join();
+        }
+        if (self.tray_window != 0) {
+            _ = c.XDestroyWindow(self.display, self.tray_window);
         }
         self.audio_data.deinit();
         _ = c.XCloseDisplay(self.display);
@@ -56,16 +73,98 @@ const App = struct {
             .Listening => "🎤 RECORDING - Press Ctrl+Alt+Space to stop",
             .Processing => "⚙️  PROCESSING - Please wait...",
         };
-        
+
         std.debug.print("\r\x1b[K{s}\n", .{status_text});
+        self.updateTrayIcon();
+    }
+
+    fn initTrayIcon(self: *Self) !void {
+        // Create a simple window for the tray icon
+        self.tray_window = c.XCreateSimpleWindow(
+            self.display,
+            self.root_window,
+            0, 0, 22, 22, 0,
+            c.XBlackPixel(self.display, self.screen),
+            c.XWhitePixel(self.display, self.screen)
+        );
+
+        // Set window properties
+        var class_hint = c.XClassHint{
+            .res_name = @constCast("dictate"),
+            .res_class = @constCast("Dictate"),
+        };
+        _ = c.XSetClassHint(self.display, self.tray_window, &class_hint);
+
+        // Set window title
+        _ = c.XStoreName(self.display, self.tray_window, "Dictate");
+
+        // Try to embed in system tray
+        const system_tray_atom = c.XInternAtom(self.display, "_NET_SYSTEM_TRAY_S0", 0);
+        const manager_window = c.XGetSelectionOwner(self.display, system_tray_atom);
+
+        if (manager_window != 0) {
+            const embed_atom = c.XInternAtom(self.display, "_NET_SYSTEM_TRAY_OPCODE", 0);
+
+            var ev: c.XEvent = undefined;
+            ev.xclient.type = c.ClientMessage;
+            ev.xclient.window = manager_window;
+            ev.xclient.message_type = embed_atom;
+            ev.xclient.format = 32;
+            ev.xclient.data.l[0] = c.CurrentTime;
+            ev.xclient.data.l[1] = 0; // SYSTEM_TRAY_REQUEST_DOCK
+            ev.xclient.data.l[2] = @intCast(self.tray_window);
+            ev.xclient.data.l[3] = 0;
+            ev.xclient.data.l[4] = 0;
+
+            _ = c.XSendEvent(self.display, manager_window, 0, c.NoEventMask, &ev);
+        }
+
+        _ = c.XSelectInput(self.display, self.tray_window, c.ExposureMask | c.ButtonPressMask);
+        _ = c.XMapWindow(self.display, self.tray_window);
+        _ = c.XFlush(self.display);
+
+        self.updateTrayIcon();
+    }
+
+    fn updateTrayIcon(self: *Self) void {
+        if (self.tray_window == 0) return;
+
+        // Create graphics context
+        const gc = c.XCreateGC(self.display, self.tray_window, 0, null);
+        defer _ = c.XFreeGC(self.display, gc);
+
+        // Clear the window
+        _ = c.XSetForeground(self.display, gc, c.XWhitePixel(self.display, self.screen));
+        _ = c.XFillRectangle(self.display, self.tray_window, gc, 0, 0, 22, 22);
+
+        // Draw icon based on state
+        switch (self.state) {
+            .NotListening => {
+                // Draw a simple circle (microphone off)
+                _ = c.XSetForeground(self.display, gc, c.XBlackPixel(self.display, self.screen));
+                _ = c.XDrawArc(self.display, self.tray_window, gc, 6, 6, 10, 10, 0, 360 * 64);
+            },
+            .Listening => {
+                // Draw a filled circle (microphone on)
+                _ = c.XSetForeground(self.display, gc, 0xFF0000); // Red
+                _ = c.XFillArc(self.display, self.tray_window, gc, 6, 6, 10, 10, 0, 360 * 64);
+            },
+            .Processing => {
+                // Draw a square (processing)
+                _ = c.XSetForeground(self.display, gc, 0x0000FF); // Blue
+                _ = c.XFillRectangle(self.display, self.tray_window, gc, 6, 6, 10, 10);
+            },
+        }
+
+        _ = c.XFlush(self.display);
     }
 
     fn startRecording(self: *Self) !void {
         if (self.is_recording) return;
-        
+
         self.mutex.lock();
         defer self.mutex.unlock();
-        
+
         self.state = .Listening;
         self.is_recording = true;
         self.audio_data.clearRetainingCapacity();
@@ -76,11 +175,11 @@ const App = struct {
 
     fn stopRecording(self: *Self) !void {
         if (!self.is_recording) return;
-        
+
         self.mutex.lock();
         self.is_recording = false;
         self.mutex.unlock();
-        
+
         self.state = .Processing;
         self.printStatus();
 
@@ -90,7 +189,7 @@ const App = struct {
         }
 
         try self.processAudio();
-        
+
         self.state = .NotListening;
         self.printStatus();
     }
@@ -189,7 +288,7 @@ const App = struct {
         var headers: ?*c.curl_slist = null;
         const auth_header = try std.fmt.allocPrintZ(self.allocator, "Authorization: Bearer {s}", .{api_key});
         defer self.allocator.free(auth_header);
-        
+
         headers = c.curl_slist_append(headers, auth_header.ptr);
         defer c.curl_slist_free_all(headers);
         _ = c.curl_easy_setopt(curl, c.CURLOPT_HTTPHEADER, headers);
@@ -224,12 +323,12 @@ const App = struct {
         // Parse JSON response to extract text
         const response = try response_data.toOwnedSlice();
         defer self.allocator.free(response);
-        
+
         if (std.mem.indexOf(u8, response, "\"text\":\"")) |start| {
             const text_start = start + 8;
             var end = text_start;
             var escaped = false;
-            
+
             while (end < response.len) {
                 if (escaped) {
                     escaped = false;
@@ -240,12 +339,12 @@ const App = struct {
                 }
                 end += 1;
             }
-            
+
             if (end < response.len) {
                 return try self.allocator.dupe(u8, response[text_start..end]);
             }
         }
-        
+
         return error.ParseError;
     }
 
@@ -285,14 +384,14 @@ const App = struct {
         }
 
         const keycode = c.XKeysymToKeycode(self.display, keysym);
-        
+
         if (shift_needed) {
             _ = c.XTestFakeKeyEvent(self.display, c.XKeysymToKeycode(self.display, c.XK_Shift_L), 1, 0);
         }
-        
+
         _ = c.XTestFakeKeyEvent(self.display, keycode, 1, 0);
         _ = c.XTestFakeKeyEvent(self.display, keycode, 0, 0);
-        
+
         if (shift_needed) {
             _ = c.XTestFakeKeyEvent(self.display, c.XKeysymToKeycode(self.display, c.XK_Shift_L), 0, 0);
         }
@@ -302,7 +401,7 @@ const App = struct {
 fn recordAudio(app: *App) void {
     var pcm_handle: ?*c.snd_pcm_t = null;
     var params: ?*c.snd_pcm_hw_params_t = null;
-    
+
     // Open PCM device for recording
     if (c.snd_pcm_open(&pcm_handle, "default", c.SND_PCM_STREAM_CAPTURE, 0) < 0) {
         std.debug.print("Failed to open PCM device\n", .{});
@@ -331,7 +430,7 @@ fn recordAudio(app: *App) void {
         const frames = c.snd_pcm_readi(pcm_handle, &buffer, buffer_size / 2);
         if (frames > 0) {
             const bytes = std.mem.sliceAsBytes(buffer[0..@intCast(frames)]);
-            
+
             app.mutex.lock();
             app.audio_data.appendSlice(bytes) catch {};
             app.mutex.unlock();
@@ -350,15 +449,15 @@ fn writeCallback(contents: ?*anyopaque, size: usize, nmemb: usize, userdata: ?*a
 fn checkHotkey(display: *c.Display) bool {
     var keys: [32]u8 = undefined;
     _ = c.XQueryKeymap(display, &keys);
-    
+
     const ctrl_keycode = c.XKeysymToKeycode(display, c.XK_Control_L);
     const alt_keycode = c.XKeysymToKeycode(display, c.XK_Alt_L);
     const space_keycode = c.XKeysymToKeycode(display, c.XK_space);
-    
+
     const ctrl_pressed = (keys[ctrl_keycode / 8] & (@as(u8, 1) << @intCast(ctrl_keycode % 8))) != 0;
     const alt_pressed = (keys[alt_keycode / 8] & (@as(u8, 1) << @intCast(alt_keycode % 8))) != 0;
     const space_pressed = (keys[space_keycode / 8] & (@as(u8, 1) << @intCast(space_keycode % 8))) != 0;
-    
+
     return ctrl_pressed and alt_pressed and space_pressed;
 }
 
@@ -391,8 +490,18 @@ pub fn main() !void {
     app.printStatus();
 
     var hotkey_pressed = false;
-    
+
     while (running) {
+        // Process X11 events for tray icon
+        while (c.XPending(app.display) > 0) {
+            var event: c.XEvent = undefined;
+            _ = c.XNextEvent(app.display, &event);
+
+            if (event.type == c.Expose and event.xexpose.window == app.tray_window) {
+                app.updateTrayIcon();
+            }
+        }
+
         // Check for hotkey
         const current_hotkey = checkHotkey(app.display);
         if (current_hotkey and !hotkey_pressed) {
@@ -401,7 +510,7 @@ pub fn main() !void {
             };
         }
         hotkey_pressed = current_hotkey;
-        
+
         std.time.sleep(50_000_000); // 50ms
     }
 
