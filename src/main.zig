@@ -79,13 +79,21 @@ const App = struct {
     }
 
     fn initTrayIcon(self: *Self) !void {
-        // Create a simple window for the tray icon
-        self.tray_window = c.XCreateSimpleWindow(
+        // Set up window attributes for transparency
+        var attrs: c.XSetWindowAttributes = undefined;
+        attrs.background_pixmap = c.ParentRelative;
+        attrs.backing_store = c.NotUseful;
+        
+        // Create window with transparency support
+        self.tray_window = c.XCreateWindow(
             self.display,
             self.root_window,
             0, 0, 22, 22, 0,
-            c.XBlackPixel(self.display, self.screen),
-            c.XWhitePixel(self.display, self.screen)
+            c.CopyFromParent,
+            c.InputOutput,
+            null,
+            c.CWBackPixmap | c.CWBackingStore,
+            &attrs
         );
 
         // Set window properties
@@ -133,9 +141,8 @@ const App = struct {
         const gc = c.XCreateGC(self.display, self.tray_window, 0, null);
         defer _ = c.XFreeGC(self.display, gc);
 
-        // Clear the window
-        _ = c.XSetForeground(self.display, gc, c.XWhitePixel(self.display, self.screen));
-        _ = c.XFillRectangle(self.display, self.tray_window, gc, 0, 0, 22, 22);
+        // Clear the window with transparent background
+        _ = c.XClearWindow(self.display, self.tray_window);
 
         // Draw icon based on state
         switch (self.state) {
@@ -150,9 +157,9 @@ const App = struct {
                 _ = c.XFillArc(self.display, self.tray_window, gc, 6, 6, 10, 10, 0, 360 * 64);
             },
             .Processing => {
-                // Draw a square (processing)
+                // Draw a filled circle (processing)
                 _ = c.XSetForeground(self.display, gc, 0x0000FF); // Blue
-                _ = c.XFillRectangle(self.display, self.tray_window, gc, 6, 6, 10, 10);
+                _ = c.XFillArc(self.display, self.tray_window, gc, 6, 6, 10, 10, 0, 360 * 64);
             },
         }
 
