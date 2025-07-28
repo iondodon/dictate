@@ -39,7 +39,7 @@ const App = struct {
         const root = c.XRootWindow(display, screen);
 
         app.* = Self{
-1, 2, 3            .allocator = allocator,
+            .allocator = allocator,
             .display = display,
             .state = .NotListening,
             .audio_data = std.ArrayList(u8).init(allocator),
