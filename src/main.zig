@@ -327,32 +327,24 @@ const App = struct {
             return error.CurlError;
         }
 
-        // Parse JSON response to extract text
+        // Parse JSON response using std.json
         const response = try response_data.toOwnedSlice();
         defer self.allocator.free(response);
 
-        if (std.mem.indexOf(u8, response, "\"text\":\"")) |start| {
-            const text_start = start + 8;
-            var end = text_start;
-            var escaped = false;
+        // Define the expected JSON structure (only fields we need)
+        const WhisperResponse = struct {
+            text: []const u8,
+        };
 
-            while (end < response.len) {
-                if (escaped) {
-                    escaped = false;
-                } else if (response[end] == '\\') {
-                    escaped = true;
-                } else if (response[end] == '"') {
-                    break;
-                }
-                end += 1;
-            }
+        // Parse JSON with ignore_unknown_fields for flexibility
+        const parsed = std.json.parseFromSlice(WhisperResponse, self.allocator, response, .{ .ignore_unknown_fields = true }) catch {
+            std.debug.print("Failed to parse JSON response: {s}\n", .{response});
+            return error.ParseError;
+        };
+        defer parsed.deinit();
 
-            if (end < response.len) {
-                return try self.allocator.dupe(u8, response[text_start..end]);
-            }
-        }
-
-        return error.ParseError;
+        // Return a copy of the text that the caller owns
+        return try self.allocator.dupe(u8, parsed.value.text);
     }
 
     fn copyToClipboard(self: *Self, text: []const u8) !void {
