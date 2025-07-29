@@ -228,7 +228,7 @@ const App = struct {
 
         if (transcription.len > 0) {
             std.debug.print("Transcription: {s}\n", .{transcription});
-            try self.pasteText(transcription);
+            try self.copyToClipboard(transcription);
         }
 
         // Clean up temp file
@@ -355,54 +355,112 @@ const App = struct {
         return error.ParseError;
     }
 
-    fn pasteText(self: *Self, text: []const u8) !void {
-        // Type each character using X11
-        for (text) |char| {
-            self.typeCharacter(char);
-            std.time.sleep(10_000_000); // 10ms delay between characters
+    fn copyToClipboard(self: *Self, text: []const u8) !void {
+        // Get clipboard atoms
+        const clipboard = c.XInternAtom(self.display, "CLIPBOARD", 0);
+        const utf8_string = c.XInternAtom(self.display, "UTF8_STRING", 0);
+        
+        // Create a property to store the text
+        const prop = c.XInternAtom(self.display, "CLIPBOARD_CONTENT", 0);
+        
+        // Store the text as a property on our window
+        _ = c.XChangeProperty(
+            self.display,
+            self.tray_window,
+            prop,
+            utf8_string,
+            8,
+            c.PropModeReplace,
+            @ptrCast(text.ptr),
+            @intCast(text.len)
+        );
+        
+        // Set ourselves as the clipboard owner
+        _ = c.XSetSelectionOwner(self.display, clipboard, self.tray_window, c.CurrentTime);
+        
+        // Also set primary selection for compatibility
+        _ = c.XSetSelectionOwner(self.display, c.XA_PRIMARY, self.tray_window, c.CurrentTime);
+        
+        _ = c.XFlush(self.display);
+        
+        std.debug.print("Text copied to clipboard. Press Ctrl+V to paste.\n", .{});
+    }
+
+    fn handleClipboardRequest(self: *Self, event: *c.XSelectionRequestEvent) void {
+
+        const utf8_string = c.XInternAtom(self.display, "UTF8_STRING", 0);
+        const targets = c.XInternAtom(self.display, "TARGETS", 0);
+        const prop = c.XInternAtom(self.display, "CLIPBOARD_CONTENT", 0);
+        
+        var response: c.XSelectionEvent = undefined;
+        response.type = c.SelectionNotify;
+        response.display = event.display;
+        response.requestor = event.requestor;
+        response.selection = event.selection;
+        response.time = event.time;
+        response.target = event.target;
+        response.property = event.property;
+
+        if (event.target == targets) {
+            // Respond with available formats
+            const supported_targets = [_]c.Atom{ utf8_string, c.XA_STRING };
+            _ = c.XChangeProperty(
+                self.display,
+                event.requestor,
+                event.property,
+                c.XA_ATOM,
+                32,
+                c.PropModeReplace,
+                @ptrCast(&supported_targets),
+                supported_targets.len
+            );
+        } else if (event.target == utf8_string or event.target == c.XA_STRING) {
+            // Get the stored clipboard content
+            var actual_type: c.Atom = undefined;
+            var actual_format: c_int = undefined;
+            var nitems: c_ulong = undefined;
+            var bytes_after: c_ulong = undefined;
+            var data: [*c]u8 = undefined;
+            
+            const result = c.XGetWindowProperty(
+                self.display,
+                self.tray_window,
+                prop,
+                0,
+                1024,
+                0,
+                c.AnyPropertyType,
+                &actual_type,
+                &actual_format,
+                &nitems,
+                &bytes_after,
+                &data
+            );
+            
+            if (result == c.Success and data != null) {
+                _ = c.XChangeProperty(
+                    self.display,
+                    event.requestor,
+                    event.property,
+                    event.target,
+                    8,
+                    c.PropModeReplace,
+                    data,
+                    @intCast(nitems)
+                );
+                _ = c.XFree(data);
+            } else {
+                response.property = c.None;
+            }
+        } else {
+            response.property = c.None;
         }
+
+        _ = c.XSendEvent(self.display, response.requestor, 0, 0, @ptrCast(&response));
         _ = c.XFlush(self.display);
     }
 
-    fn typeCharacter(self: *Self, char: u8) void {
-        var keysym: c_ulong = 0;
-        var shift_needed = false;
 
-        switch (char) {
-            'a'...'z' => keysym = c.XK_a + @as(c_ulong, char - 'a'),
-            'A'...'Z' => {
-                keysym = c.XK_a + @as(c_ulong, char - 'A');
-                shift_needed = true;
-            },
-            '0'...'9' => keysym = c.XK_0 + @as(c_ulong, char - '0'),
-            ' ' => keysym = c.XK_space,
-            '.' => keysym = c.XK_period,
-            ',' => keysym = c.XK_comma,
-            '!' => {
-                keysym = c.XK_1;
-                shift_needed = true;
-            },
-            '?' => {
-                keysym = c.XK_slash;
-                shift_needed = true;
-            },
-            '\n' => keysym = c.XK_Return,
-            else => return, // Skip unsupported characters
-        }
-
-        const keycode = c.XKeysymToKeycode(self.display, keysym);
-
-        if (shift_needed) {
-            _ = c.XTestFakeKeyEvent(self.display, c.XKeysymToKeycode(self.display, c.XK_Shift_L), 1, 0);
-        }
-
-        _ = c.XTestFakeKeyEvent(self.display, keycode, 1, 0);
-        _ = c.XTestFakeKeyEvent(self.display, keycode, 0, 0);
-
-        if (shift_needed) {
-            _ = c.XTestFakeKeyEvent(self.display, c.XKeysymToKeycode(self.display, c.XK_Shift_L), 0, 0);
-        }
-    }
 };
 
 fn recordAudio(app: *App) void {
@@ -499,13 +557,15 @@ pub fn main() !void {
     var hotkey_pressed = false;
 
     while (running) {
-        // Process X11 events for tray icon
+        // Process X11 events for tray icon and clipboard
         while (c.XPending(app.display) > 0) {
             var event: c.XEvent = undefined;
             _ = c.XNextEvent(app.display, &event);
 
             if (event.type == c.Expose and event.xexpose.window == app.tray_window) {
                 app.updateTrayIcon();
+            } else if (event.type == c.SelectionRequest) {
+                app.handleClipboardRequest(&event.xselectionrequest);
             }
         }
 

@@ -6,7 +6,7 @@ A simple voice dictation application for Linux that converts speech to text usin
 
 - **Global hotkey**: Press `Ctrl+Alt+Space` to start/stop recording
 - **Voice transcription**: Uses OpenAI Whisper API for accurate speech-to-text
-- **Auto-typing**: Automatically types transcribed text at cursor location
+- **Clipboard integration**: Copies transcribed text to clipboard for manual pasting
 
 ## Requirements
 
@@ -44,9 +44,10 @@ A simple voice dictation application for Linux that converts speech to text usin
    - Speak your message
    - Press `Ctrl+Alt+Space` again to stop and transcribe
 
-3. **Check status**:
-   - Look at the system tray icon for current status
-   - Console output shows state changes
+3. **Paste the text**:
+   - After transcription, the text will be copied to your clipboard
+   - Use `Ctrl+V` to paste the transcribed text wherever you need it
+   - Check console output for status updates
 
 ## Build Requirements
 
@@ -55,4 +56,4 @@ A simple voice dictation application for Linux that converts speech to text usin
 - ALSA development headers
 - curl development headers
 
-The application will automatically type the transcribed text at your current cursor position.
+The application copies transcribed text to the clipboard - you can then paste it anywhere using Ctrl+V.
