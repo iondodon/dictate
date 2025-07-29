@@ -5,7 +5,6 @@ A simple voice dictation application for Linux that converts speech to text usin
 ## Features
 
 - **Global hotkey**: Press `Ctrl+Alt+Space` to start/stop recording
-- **System tray icon**: Shows current status (Not Listening, Listening, Processing)
 - **Voice transcription**: Uses OpenAI Whisper API for accurate speech-to-text
 - **Auto-typing**: Automatically types transcribed text at cursor location
 
@@ -49,15 +48,9 @@ A simple voice dictation application for Linux that converts speech to text usin
    - Look at the system tray icon for current status
    - Console output shows state changes
 
-## Status Indicators
-
-- **⭕ Not Listening**: Ready to record (black circle in tray)
-- **🎤 Recording**: Currently recording audio (red circle in tray)  
-- **⚙️ Processing**: Sending to OpenAI Whisper (blue square in tray)
-
 ## Build Requirements
 
-- Zig 0.11+ 
+- Zig 0.11+
 - X11 development headers
 - ALSA development headers
 - curl development headers
