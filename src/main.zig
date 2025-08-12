@@ -29,6 +29,7 @@ const App = struct {
     tray_window: c.Window,
     screen: c_int,
     root_window: c.Window,
+    gray_pixel: c_ulong, // <-- added
 
     const Self = @This();
 
@@ -49,6 +50,7 @@ const App = struct {
             .tray_window = 0,
             .screen = screen,
             .root_window = root,
+            .gray_pixel = c.XBlackPixel(display, screen), // default, will allocate proper gray later
         };
 
         try app.initTrayIcon();
@@ -83,18 +85,9 @@ const App = struct {
         var attrs: c.XSetWindowAttributes = undefined;
         attrs.background_pixmap = c.ParentRelative;
         attrs.backing_store = c.NotUseful;
-        
+
         // Create window with transparency support
-        self.tray_window = c.XCreateWindow(
-            self.display,
-            self.root_window,
-            0, 0, 22, 22, 0,
-            c.CopyFromParent,
-            c.InputOutput,
-            null,
-            c.CWBackPixmap | c.CWBackingStore,
-            &attrs
-        );
+        self.tray_window = c.XCreateWindow(self.display, self.root_window, 0, 0, 22, 22, 0, c.CopyFromParent, c.InputOutput, null, c.CWBackPixmap | c.CWBackingStore, &attrs);
 
         // Set window properties
         var class_hint = c.XClassHint{
@@ -131,6 +124,25 @@ const App = struct {
         _ = c.XMapWindow(self.display, self.tray_window);
         _ = c.XFlush(self.display);
 
+        // Allocate a gray color once and cache its pixel
+        const cmap = c.XDefaultColormap(self.display, self.screen);
+        var color: c.XColor = undefined;
+        var exact: c.XColor = undefined;
+        if (c.XAllocNamedColor(self.display, cmap, "gray60", &color, &exact) != 0) {
+            self.gray_pixel = color.pixel;
+        } else {
+            // Fallback: try a direct RGB (works on TrueColor visuals)
+            color.red = 0x9999; // ~60%
+            color.green = 0x9999;
+            color.blue = 0x9999;
+            color.flags = 0;
+            if (c.XAllocColor(self.display, cmap, &color) != 0) {
+                self.gray_pixel = color.pixel;
+            } else {
+                self.gray_pixel = c.XBlackPixel(self.display, self.screen);
+            }
+        }
+
         self.updateTrayIcon();
     }
 
@@ -147,18 +159,21 @@ const App = struct {
         // Draw icon based on state
         switch (self.state) {
             .NotListening => {
-                // Draw a simple circle (microphone off)
+                // Filled gray circle with thin black outline
+                _ = c.XSetForeground(self.display, gc, self.gray_pixel);
+                _ = c.XFillArc(self.display, self.tray_window, gc, 6, 6, 10, 10, 0, 360 * 64);
+
                 _ = c.XSetForeground(self.display, gc, c.XBlackPixel(self.display, self.screen));
                 _ = c.XDrawArc(self.display, self.tray_window, gc, 6, 6, 10, 10, 0, 360 * 64);
             },
             .Listening => {
-                // Draw a filled circle (microphone on)
-                _ = c.XSetForeground(self.display, gc, 0xFF0000); // Red
+                // Draw a filled red circle (microphone on)
+                _ = c.XSetForeground(self.display, gc, 0xFF0000);
                 _ = c.XFillArc(self.display, self.tray_window, gc, 6, 6, 10, 10, 0, 360 * 64);
             },
             .Processing => {
-                // Draw a filled circle (processing)
-                _ = c.XSetForeground(self.display, gc, 0x0000FF); // Blue
+                // Draw a filled blue circle (processing)
+                _ = c.XSetForeground(self.display, gc, 0x0000FF);
                 _ = c.XFillArc(self.display, self.tray_window, gc, 6, 6, 10, 10, 0, 360 * 64);
             },
         }
@@ -351,39 +366,29 @@ const App = struct {
         // Get clipboard atoms
         const clipboard = c.XInternAtom(self.display, "CLIPBOARD", 0);
         const utf8_string = c.XInternAtom(self.display, "UTF8_STRING", 0);
-        
+
         // Create a property to store the text
         const prop = c.XInternAtom(self.display, "CLIPBOARD_CONTENT", 0);
-        
+
         // Store the text as a property on our window
-        _ = c.XChangeProperty(
-            self.display,
-            self.tray_window,
-            prop,
-            utf8_string,
-            8,
-            c.PropModeReplace,
-            @ptrCast(text.ptr),
-            @intCast(text.len)
-        );
-        
+        _ = c.XChangeProperty(self.display, self.tray_window, prop, utf8_string, 8, c.PropModeReplace, @ptrCast(text.ptr), @intCast(text.len));
+
         // Set ourselves as the clipboard owner
         _ = c.XSetSelectionOwner(self.display, clipboard, self.tray_window, c.CurrentTime);
-        
+
         // Also set primary selection for compatibility
         _ = c.XSetSelectionOwner(self.display, c.XA_PRIMARY, self.tray_window, c.CurrentTime);
-        
+
         _ = c.XFlush(self.display);
-        
+
         std.debug.print("Text copied to clipboard. Press Ctrl+V to paste.\n", .{});
     }
 
     fn handleClipboardRequest(self: *Self, event: *c.XSelectionRequestEvent) void {
-
         const utf8_string = c.XInternAtom(self.display, "UTF8_STRING", 0);
         const targets = c.XInternAtom(self.display, "TARGETS", 0);
         const prop = c.XInternAtom(self.display, "CLIPBOARD_CONTENT", 0);
-        
+
         var response: c.XSelectionEvent = undefined;
         response.type = c.SelectionNotify;
         response.display = event.display;
@@ -396,16 +401,7 @@ const App = struct {
         if (event.target == targets) {
             // Respond with available formats
             const supported_targets = [_]c.Atom{ utf8_string, c.XA_STRING };
-            _ = c.XChangeProperty(
-                self.display,
-                event.requestor,
-                event.property,
-                c.XA_ATOM,
-                32,
-                c.PropModeReplace,
-                @ptrCast(&supported_targets),
-                supported_targets.len
-            );
+            _ = c.XChangeProperty(self.display, event.requestor, event.property, c.XA_ATOM, 32, c.PropModeReplace, @ptrCast(&supported_targets), supported_targets.len);
         } else if (event.target == utf8_string or event.target == c.XA_STRING) {
             // Get the stored clipboard content
             var actual_type: c.Atom = undefined;
@@ -413,33 +409,11 @@ const App = struct {
             var nitems: c_ulong = undefined;
             var bytes_after: c_ulong = undefined;
             var data: [*c]u8 = undefined;
-            
-            const result = c.XGetWindowProperty(
-                self.display,
-                self.tray_window,
-                prop,
-                0,
-                1024,
-                0,
-                c.AnyPropertyType,
-                &actual_type,
-                &actual_format,
-                &nitems,
-                &bytes_after,
-                &data
-            );
-            
+
+            const result = c.XGetWindowProperty(self.display, self.tray_window, prop, 0, 1024, 0, c.AnyPropertyType, &actual_type, &actual_format, &nitems, &bytes_after, &data);
+
             if (result == c.Success and data != null) {
-                _ = c.XChangeProperty(
-                    self.display,
-                    event.requestor,
-                    event.property,
-                    event.target,
-                    8,
-                    c.PropModeReplace,
-                    data,
-                    @intCast(nitems)
-                );
+                _ = c.XChangeProperty(self.display, event.requestor, event.property, event.target, 8, c.PropModeReplace, data, @intCast(nitems));
                 _ = c.XFree(data);
             } else {
                 response.property = c.None;
@@ -451,8 +425,6 @@ const App = struct {
         _ = c.XSendEvent(self.display, response.requestor, 0, 0, @ptrCast(&response));
         _ = c.XFlush(self.display);
     }
-
-
 };
 
 fn recordAudio(app: *App) void {
